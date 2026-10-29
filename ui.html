@@ -1,0 +1,259 @@
+<!doctype html><html lang="uk"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AZART — обробка фото</title>
+<style>
+:root{--bg:#14161a;--panel:#1d2026;--line:#2e333c;--txt:#e7e9ee;--dim:#9aa3b2;--acc:#ff9d3c;--acc2:#4aa8ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.45 "Segoe UI",system-ui,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+header{display:flex;gap:8px;align-items:center;padding:9px 13px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h1{font-size:15px;margin:0 8px 0 0;letter-spacing:.06em;color:var(--acc)}
+input[type=text]{background:#0f1115;border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:7px 10px;min-width:260px;flex:1}
+input.sm{min-width:150px;flex:none}
+button{background:#2a2f38;border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:7px 12px;cursor:pointer;font-size:13px}
+button:hover{background:#353b46}
+button.pri{background:var(--acc);border-color:var(--acc);color:#241303;font-weight:600}
+button.on{background:var(--acc2);border-color:var(--acc2);color:#04121f;font-weight:600}
+button:disabled{opacity:.45;cursor:default}
+main{flex:1;display:flex;min-height:0}
+#list{width:180px;border-right:1px solid var(--line);overflow:auto;background:var(--panel)}
+#list div{padding:7px 11px;cursor:pointer;border-bottom:1px solid #23272f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+#list div:hover{background:#262b33}
+#list div.sel{background:var(--acc);color:#241303;font-weight:600}
+#list div.has::after{content:"●";color:var(--acc2);margin-left:6px;font-size:10px}
+#list div.sel.has::after{color:#241303}
+#stage{flex:1;display:flex;flex-direction:column;min-width:0;background:#0d0f12}
+#bar{display:flex;gap:7px;align-items:center;padding:7px 11px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+#wrap{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;overflow:hidden;position:relative;padding:10px;min-height:0}
+#holder,#holder2{position:relative;line-height:0}
+#holder2{display:none}
+img.view{max-width:100%;max-height:calc(100vh - 150px);display:block;user-select:none;-webkit-user-drag:none}
+body.split img.view{max-width:49vw}
+body.split #holder2{display:block}
+.cap{position:absolute;left:6px;top:6px;background:#000a;color:#fff;font-size:11px;padding:2px 7px;border-radius:5px;line-height:1.6}
+.zone{position:absolute;border:1.5px solid var(--acc2);background:rgba(74,168,255,.09);cursor:move}
+.zone.el{border-radius:50%}
+.zone.sel{border-color:var(--acc);background:rgba(255,157,60,.13)}
+.zone .hd{position:absolute;right:-6px;bottom:-6px;width:12px;height:12px;background:var(--acc);border-radius:3px;cursor:nwse-resize}
+#side{width:286px;border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:11px}
+h3{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:14px 0 7px}
+h3:first-child{margin-top:0}
+.row{display:flex;align-items:center;gap:7px;margin:6px 0}
+.row label{width:94px;font-size:12.5px;color:var(--dim);flex:none}
+.row input[type=range]{flex:1;accent-color:var(--acc);min-width:0}
+.row span{width:40px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px}
+.zl{border:1px solid var(--line);border-radius:7px;padding:7px;margin-bottom:7px;cursor:pointer}
+.zl.sel{border-color:var(--acc)}
+.zl .hdr{display:flex;align-items:center;justify-content:space-between}
+.zl .x{background:#3a2026;border-color:#5c2b33;padding:2px 8px;font-size:12px}
+.hint{color:var(--dim);font-size:12px;margin-top:7px}
+#auto{color:var(--dim);font-size:11.5px;line-height:1.7;margin-top:6px;font-variant-numeric:tabular-nums}
+#prog{color:var(--acc2);font-size:13px}
+#err{color:#ff7a7a;font-size:12px;padding:0 13px;white-space:pre-wrap}
+</style></head><body>
+<header>
+  <h1>AZART</h1>
+  <input type="text" id="path" placeholder="Шлях до папки з фото">
+  <button onclick="openFolder()">Відкрити папку</button>
+  <button class="pri" id="btnProc" onclick="runAll()">Обробити всю папку</button>
+  <input type="text" class="sm" id="outdir" value="оброблені" title="Назва папки для результату">
+  <button id="btnSave" onclick="saveAll()" disabled>Зберегти результат</button>
+  <span id="prog"></span>
+</header>
+<div id="err"></div>
+<main>
+  <div id="list"></div>
+  <div id="stage">
+    <div id="bar">
+      <button id="btnSplit" onclick="toggleSplit()">Порівняння поруч</button>
+      <button onclick="rot(-90)">↺ Повернути</button>
+      <button onclick="rot(90)">Повернути ↻</button>
+      <button onclick="addZone('rect')">+ Зона</button>
+      <button onclick="addZone('ellipse')">+ Овал</button>
+      <button onclick="resetAll()">Скинути поправки</button>
+      <button onclick="applyAll()">Поправки до всіх</button>
+      <span class="hint">Затисніть фото мишею, щоб побачити оригінал</span>
+    </div>
+    <div id="wrap">
+      <div id="holder"><img id="img" class="view" alt=""><span class="cap" id="cap">після</span></div>
+      <div id="holder2"><img id="img2" class="view" alt=""><span class="cap">оригінал</span></div>
+    </div>
+  </div>
+  <div id="side">
+    <h3>Поправки до автоматичних</h3>
+    <div id="sliders"></div>
+    <div id="auto"></div>
+    <h3>Зони</h3>
+    <div id="zones"></div>
+    <div class="hint">«+ Зона», потім проведіть мишею по фото. Пересувати — тягнути всередині,
+      змінювати розмір — за кут. Видалити — кнопкою × або клавішею Delete.</div>
+  </div>
+</main>
+<script>
+const S={files:[],cur:null,settings:{},sel:-1,mode:null,beforeURL:null,afterURL:null,tok:0,split:false,ready:false};
+const FIELDS=[['ev','Експозиція',-1.5,1.5,.05],['temp','Температура',-.3,.3,.01],['tint','Тінт',-.3,.3,.01],
+ ['shadows','Тіні',-.8,1.2,.05],['highlights','Світла',-.8,1.2,.05],['mid','Середні тони',-.3,.3,.01],
+ ['white','Біла точка',-.06,.25,.01],['contrast','Контраст',-.4,.6,.02],
+ ['sat','Насиченість',-.5,.5,.02],['black','Чорна точка',-.05,.08,.005]];
+const INFO=[['ev','Експозиція'],['temp','Температура'],['tint','Тінт'],['shadows','Тіні'],
+ ['highlights','Світла'],['gamma','Гамма'],['white','Біла точка'],['contrast','Контраст'],
+ ['sat','Насиченість'],['black','Чорна точка']];
+const ZF=[['ev','Яскравість',-1.2,1.2,.05],['sat','Насиченість',-.6,.6,.02],['feather','Розмиття краю',.05,.9,.05]];
+const $=s=>document.querySelector(s);
+const err=m=>{$('#err').textContent=m||''};
+const st=()=>S.settings[S.cur]||(S.settings[S.cur]={zones:[],adjust:{},rotate:0});
+
+async function openFolder(){
+  const p=$('#path').value.trim(); if(!p)return;
+  const d=await (await fetch('/api/open?path='+encodeURIComponent(p))).json();
+  if(d.error)return err(d.error); err(''); load(d);
+}
+function load(d){S.files=d.files;S.settings=d.settings||{};S.ready=d.ready;$('#path').value=d.src||'';
+  drawList(); if(S.files[0])pick(S.files[0]); if(!d.ready)waitReady();}
+async function waitReady(){
+  for(let i=0;i<300;i++){await new Promise(r=>setTimeout(r,1500));
+    const d=await (await fetch('/api/state')).json();
+    if(d.ready){S.ready=true;$('#prog').textContent='';if(S.cur)refresh(true);return}
+    $('#prog').textContent='Визначаю колір зйомки…';}
+}
+function drawList(){
+  const l=$('#list'); l.innerHTML='';
+  S.files.forEach(f=>{const d=document.createElement('div');d.textContent=f;
+    const s=S.settings[f]||{}; const has=(s.zones&&s.zones.length)||(s.adjust&&Object.keys(s.adjust).length)||s.rotate;
+    d.className=(f===S.cur?'sel ':'')+(has?'has':''); d.onclick=()=>pick(f); l.appendChild(d);});
+}
+async function pick(f){
+  S.cur=f;S.sel=-1;drawList();drawSliders();drawZones();
+  const tok=++S.tok;
+  if(S.beforeURL)URL.revokeObjectURL(S.beforeURL);
+  S.beforeURL=URL.createObjectURL(await (await fetch('/api/before?file='+encodeURIComponent(f))).blob());
+  if(tok!==S.tok)return;
+  $('#img').src=S.beforeURL; $('#img2').src=S.beforeURL; $('#cap').textContent='оригінал';
+  refresh(true);
+}
+let timer=null;
+function refresh(now){clearTimeout(timer);timer=setTimeout(doRefresh,now?0:200)}
+async function doRefresh(){
+  if(!S.cur)return;
+  const f=S.cur, tok=++S.tok;
+  await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({file:f,zones:st().zones,adjust:st().adjust,rotate:st().rotate||0})});
+  if(tok!==S.tok)return;
+  $('#cap').textContent='обробка…';
+  const r=await fetch('/api/after?file='+encodeURIComponent(f)+'&tok='+tok);
+  if(tok!==S.tok)return;
+  if(!r.ok){return err('Помилка обробки')}
+  const info=JSON.parse(r.headers.get('X-Info')||'{}');
+  $('#auto').innerHTML='Підсумкові значення:<br>'+INFO.filter(x=>info[x[0]]!=null)
+    .map(x=>x[1]+': '+(+info[x[0]]).toFixed(2)).join(' · ');
+  const blob=await r.blob(); if(tok!==S.tok)return;
+  if(S.afterURL)URL.revokeObjectURL(S.afterURL);
+  S.afterURL=URL.createObjectURL(blob);
+  $('#img').src=S.afterURL; $('#cap').textContent='після'; drawList();
+}
+function drawSliders(){
+  const box=$('#sliders'); box.innerHTML='';
+  FIELDS.forEach(([k,name,lo,hi,step])=>{
+    const v=(st().adjust||{})[k]||0;
+    const d=document.createElement('div'); d.className='row';
+    d.innerHTML=`<label>${name}</label><input type=range min=${lo} max=${hi} step=${step} value=${v}><span>${(+v).toFixed(2)}</span>`;
+    d.querySelector('input').oninput=e=>{const x=parseFloat(e.target.value); st().adjust=st().adjust||{};
+      if(Math.abs(x)<1e-9)delete st().adjust[k]; else st().adjust[k]=x;
+      d.querySelector('span').textContent=x.toFixed(2); refresh();};
+    box.appendChild(d);
+  });
+}
+function drawZones(){
+  const box=$('#zones'); box.innerHTML='';
+  (st().zones||[]).forEach((z,i)=>{
+    const d=document.createElement('div'); d.className='zl'+(i===S.sel?' sel':'');
+    const h=document.createElement('div'); h.className='hdr';
+    h.innerHTML='<b>'+(z.shape==='ellipse'?'Овал ':'Зона ')+(i+1)+'</b>';
+    const x=document.createElement('button'); x.className='x'; x.textContent='× видалити';
+    x.onclick=e=>{e.stopPropagation(); st().zones.splice(i,1); S.sel=-1; drawZones(); refresh(true)};
+    h.appendChild(x); d.appendChild(h);
+    d.onclick=()=>{S.sel=i;drawZones()};
+    if(i===S.sel)ZF.forEach(([k,name,lo,hi,step])=>{
+      const v=z[k]!==undefined?z[k]:(k==='feather'?.3:0);
+      const r=document.createElement('div'); r.className='row';
+      r.innerHTML=`<label>${name}</label><input type=range min=${lo} max=${hi} step=${step} value=${v}><span>${(+v).toFixed(2)}</span>`;
+      r.querySelector('input').oninput=e=>{z[k]=parseFloat(e.target.value);
+        r.querySelector('span').textContent=z[k].toFixed(2); refresh();};
+      d.appendChild(r);});
+    box.appendChild(d);
+  });
+  paintZones();
+}
+function paintZones(){
+  document.querySelectorAll('.zone').forEach(e=>e.remove());
+  const img=$('#img'); if(!img.clientWidth)return;
+  (st().zones||[]).forEach((z,i)=>{
+    const d=document.createElement('div');
+    d.className='zone'+(z.shape==='ellipse'?' el':'')+(i===S.sel?' sel':'');
+    d.style.left=(z.x*img.clientWidth)+'px'; d.style.top=(z.y*img.clientHeight)+'px';
+    d.style.width=(z.w*img.clientWidth)+'px'; d.style.height=(z.h*img.clientHeight)+'px';
+    d.innerHTML='<div class="hd"></div>';
+    d.onmousedown=e=>{e.stopPropagation();e.preventDefault();S.sel=i;drawZones();
+      const hd=e.target.classList.contains('hd'),sx=e.clientX,sy=e.clientY,o={...z};
+      const mv=m=>{const dx=(m.clientX-sx)/img.clientWidth, dy=(m.clientY-sy)/img.clientHeight;
+        if(hd){z.w=Math.max(.03,o.w+dx);z.h=Math.max(.03,o.h+dy)}else{z.x=o.x+dx;z.y=o.y+dy}
+        paintZones();};
+      const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);refresh()};
+      document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);};
+    $('#holder').appendChild(d);
+  });
+}
+function addZone(shape){S.mode=shape;$('#img').style.cursor='crosshair'}
+function resetAll(){st().zones=[];st().adjust={};S.sel=-1;drawSliders();drawZones();refresh(true)}
+async function applyAll(){
+  const d=await (await fetch('/api/apply_all',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({from:S.cur})})).json();
+  S.settings=d.settings; drawList();
+}
+function rot(a){st().rotate=(((st().rotate||0)+a)%360+360)%360; pick(S.cur)}
+function toggleSplit(){S.split=!S.split;document.body.classList.toggle('split',S.split);
+  $('#btnSplit').classList.toggle('on',S.split);paintZones()}
+document.addEventListener('keydown',e=>{
+  if(e.key==='Delete'&&S.sel>=0){st().zones.splice(S.sel,1);S.sel=-1;drawZones();refresh(true)}});
+$('#img').addEventListener('mousedown',e=>{
+  const img=$('#img'), r=img.getBoundingClientRect();
+  if(!S.mode){ if(S.afterURL){img.src=S.beforeURL;$('#cap').textContent='оригінал';} 
+    const up=()=>{if(S.afterURL){img.src=S.afterURL;$('#cap').textContent='після';}
+      document.removeEventListener('mouseup',up)};
+    document.addEventListener('mouseup',up); return; }
+  e.preventDefault();
+  const x0=(e.clientX-r.left)/r.width, y0=(e.clientY-r.top)/r.height;
+  const z={shape:S.mode,x:x0,y:y0,w:.01,h:.01,feather:.3,ev:.25,sat:0};
+  st().zones=st().zones||[]; st().zones.push(z); S.sel=st().zones.length-1;
+  const mv=m=>{z.w=Math.abs((m.clientX-r.left)/r.width-x0);z.h=Math.abs((m.clientY-r.top)/r.height-y0);
+    z.x=Math.min(x0,(m.clientX-r.left)/r.width);z.y=Math.min(y0,(m.clientY-r.top)/r.height);paintZones()};
+  const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);
+    S.mode=null;img.style.cursor='';drawZones();refresh(true)};
+  document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
+});
+$('#img').onload=paintZones; window.addEventListener('resize',paintZones);
+async function runAll(){
+  err(''); $('#btnProc').disabled=true; $('#btnSave').disabled=true;
+  const r=await (await fetch('/api/process',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).json();
+  if(r.error){$('#btnProc').disabled=false;return err(r.error)}
+  poll(()=>{$('#btnProc').disabled=false;$('#btnSave').disabled=false;});
+}
+async function saveAll(){
+  $('#btnSave').disabled=true;
+  await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({folder:$('#outdir').value.trim()||'оброблені'})});
+  poll(()=>{});
+}
+function poll(done){
+  const t=setInterval(async()=>{
+    const p=await (await fetch('/api/progress')).json();
+    if(p.done){clearInterval(t);
+      if(p.error){err(p.error);$('#prog').textContent='Помилка'}
+      else if(p.stage==='save'){$('#prog').textContent='Збережено в: '+p.dst}
+      else {$('#prog').textContent='Оброблено '+p.n+' фото. Натисніть «Зберегти результат».';
+            if(p.errors&&p.errors.length)err(p.errors.join('\n'))}
+      done();}
+    else $('#prog').textContent=(p.stage==='save'?'Збереження ':'Обробка ')+p.i+' з '+p.n+' — '+(p.name||'');
+  },700);
+}
+fetch('/api/state').then(r=>r.json()).then(load);
+</script></body></html>
