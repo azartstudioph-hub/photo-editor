@@ -1,0 +1,30 @@
+name: Зібрати AZART для Windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Встановити залежності
+        run: pip install numpy opencv-python-headless pillow pyinstaller
+      - name: Зібрати
+        run: pyinstaller --noconfirm azart.spec
+      - name: Додати ярлик запуску
+        shell: cmd
+        run: |
+          echo @echo off> dist\AZART\Запустити.bat
+          echo chcp 65001 ^>nul>> dist\AZART\Запустити.bat
+          echo cd /d "%%~dp0">> dist\AZART\Запустити.bat
+          echo set /p FOLDER=Перетягніть сюди папку з фото і натисніть Enter: >> dist\AZART\Запустити.bat
+          echo AZART.exe "%%FOLDER%%">> dist\AZART\Запустити.bat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AZART-windows
+          path: dist/AZART
