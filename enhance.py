@@ -387,14 +387,16 @@ def render(rgb8, r, p=P, zones=None):
 
     # тепле підсвічування: жовто-оранжеві тони (шкіра, дерево, листя) стають світлішими
     if p['skin_lum'] > 0.005:
-        q = cv2.resize(srgb, (max(W//2, 32), max(H//2, 32)), interpolation=cv2.INTER_AREA)
-        mx = chmax(q); mn = chmin(q); d = np.maximum(mx-mn, 1e-5)
-        isr = (q[..., 0] >= mx-1e-6)
-        hue = 60.0*(q[..., 1]-q[..., 2])/d
+        # маска рахується у повному розмірі: зменшена розмивається через краї
+        # і піднімає сусідні світлі ділянки, через що потім доводиться
+        # сильніше тиснути світла і лице стає пласким
+        mx = chmax(srgb); mn = chmin(srgb); d = np.maximum(mx-mn, 1e-5)
+        isr = (srgb[..., 0] >= mx-1e-6)
+        hue = 60.0*(srgb[..., 1]-srgb[..., 2])/d
         a1, a2, a3, a4 = p['skin_hue']
         m = (isr*ss(hue, a1, a2)*(1-ss(hue, a3, a4))*ss(d/np.maximum(mx, 1e-5), 0.06, 0.16)
              * ss(mx, 0.10, 0.22)*(1-ss(mx, 0.85, 0.99)))
-        srgb = srgb*(1+p['skin_lum']*cv2.resize(m, (W, H), interpolation=cv2.INTER_LINEAR))[..., None]
+        srgb = srgb*(1+p['skin_lum']*m)[..., None]
 
     # насиченість: слабконасичене піднімається більше, шкіра отримує невелику добавку
     if r['sat'] > 0.01 or r.get('face_box') or any(z.get('sat') for _, z in zmasks):
