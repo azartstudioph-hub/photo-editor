@@ -55,6 +55,8 @@ h3:first-child{margin-top:0}
   <input type="text" id="path" placeholder="Шлях до папки з фото">
   <button onclick="openFolder()">Відкрити папку</button>
   <button class="pri" id="btnProc" onclick="runAll()">Обробити всю папку</button>
+  <label class="hint" style="white-space:nowrap">процесів
+    <input type="number" id="workers" min="1" max="8" value="2" style="width:46px;background:#0f1115;border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:5px"></label>
   <input type="text" class="sm" id="outdir" value="оброблені" title="Назва папки для результату">
   <button id="btnSave" onclick="saveAll()" disabled>Зберегти результат</button>
   <span id="prog"></span>
@@ -108,6 +110,7 @@ async function openFolder(){
   if(d.error)return err(d.error); err(''); load(d);
 }
 function load(d){S.files=d.files;S.settings=d.settings||{};S.ready=d.ready;$('#path').value=d.src||'';
+  if(d.workers){$('#workers').value=d.workers;$('#workers').title='Ядер у комп\'ютері: '+d.cores+'. Більше процесів — швидше, але комп\'ютер завантажений сильніше.'}
   drawList(); if(S.files[0])pick(S.files[0]); if(!d.ready)waitReady();}
 async function waitReady(){
   for(let i=0;i<300;i++){await new Promise(r=>setTimeout(r,1500));
@@ -233,7 +236,8 @@ $('#img').addEventListener('mousedown',e=>{
 $('#img').onload=paintZones; window.addEventListener('resize',paintZones);
 async function runAll(){
   err(''); $('#btnProc').disabled=true; $('#btnSave').disabled=true;
-  const r=await (await fetch('/api/process',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).json();
+  const r=await (await fetch('/api/process',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({workers:parseInt($('#workers').value)||0})})).json();
   if(r.error){$('#btnProc').disabled=false;return err(r.error)}
   poll(()=>{$('#btnProc').disabled=false;$('#btnSave').disabled=false;});
 }

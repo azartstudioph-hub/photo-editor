@@ -98,6 +98,32 @@ def run(src, dst, mode='auto', settings=None, log=print):
     return rep
 
 
+def lower_priority():
+    """Нижчий пріоритет: комп'ютер лишається чутливим, поки йде обробка."""
+    try:
+        if os.name == 'nt':
+            import ctypes
+            k = ctypes.windll.kernel32
+            k.SetPriorityClass(k.GetCurrentProcess(), 0x00004000)   # BELOW_NORMAL
+        else:
+            os.nice(10)
+    except Exception:
+        pass
+
+
+def init_worker():
+    """Кожен процес працює в один потік: інакше процеси б'ються за ядра
+    і ноутбук підвисає, хоча роботи виконується не більше."""
+    try: cv2.setNumThreads(1)
+    except Exception: pass
+    lower_priority()
+
+
+def default_workers():
+    n = os.cpu_count() or 2
+    return max(1, min(n-1, 4))      # одне ядро лишаємо системі
+
+
 def work(a):
     """Одне фото для паралельної обробки (має бути у звичайному модулі,
     інакше не працює у зібраному .exe)."""

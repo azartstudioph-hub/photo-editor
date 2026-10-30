@@ -17,7 +17,7 @@ SETTINGS_FILE = 'azart-settings.json'
 TMP_DIR = '__azart_tmp'
 PREVIEW_MAX = 1280
 LOCK = threading.Lock()
-STATE = dict(src=None, files=[], small={}, cast={}, analysis={}, settings={}, job=None)
+STATE = dict(src=None, files=[], small={}, cast={}, analysis={}, settings={}, job=None, workers=None)
 
 
 # ------------------------------------------------------------------ налаштування
@@ -90,6 +90,9 @@ def jpeg(arr, q=86):
 
 # ------------------------------------------------------------------ пакетна обробка
 def batch(workers=None):
+    for v in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+              'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS'):
+        os.environ[v] = '1'        # процеси-помічники не множать потоки
     src = STATE['src']; tmp = os.path.join(src, TMP_DIR)
     shutil.rmtree(tmp, ignore_errors=True); os.makedirs(tmp, exist_ok=True)
     files = list(STATE['files'])
@@ -98,14 +101,16 @@ def batch(workers=None):
         if not STATE['cast']: prepare_casts()
         args = [(f, os.path.join(tmp, os.path.basename(f)), STATE['cast'].get(f),
                  st_of(f)['zones'], st_of(f)['adjust'], st_of(f)['rotate']) for f in files]
-        n = workers or max(1, min(os.cpu_count() or 2, 6))
+        n = int(workers or STATE.get('workers') or R.default_workers())
+        n = max(1, min(n, 8))
         STATE['job']['workers'] = n
         if n > 1:
-            with ProcessPoolExecutor(max_workers=n) as ex:
+            with ProcessPoolExecutor(max_workers=n, initializer=R.init_worker) as ex:
                 for k, err in enumerate(ex.map(R.work, args, chunksize=1)):
                     STATE['job'].update(i=k+1, name=os.path.basename(files[k]))
                     if err: STATE['job']['errors'].append(err)
         else:
+            R.init_worker()
             for k, a in enumerate(args):
                 err = R.work(a)
                 STATE['job'].update(i=k+1, name=os.path.basename(files[k]))
@@ -151,7 +156,8 @@ class H(BaseHTTPRequestHandler):
     def _pack(self):
         return dict(src=STATE['src'], files=[os.path.basename(f) for f in STATE['files']],
                     settings={os.path.basename(f): STATE['settings'][f] for f in STATE['files']},
-                    ready=bool(STATE['cast']))
+                    ready=bool(STATE['cast']), cores=os.cpu_count() or 2,
+                    workers=STATE.get('workers') or R.default_workers())
 
     def do_GET(self):
         u = urlparse(self.path); q = parse_qs(u.query)
@@ -199,6 +205,7 @@ class H(BaseHTTPRequestHandler):
                     st_of(f)['adjust'] = dict(s.get('adjust', {}))
                 save_settings(); return self._json(self._pack())
             if u.path == '/api/process':
+                if data.get('workers'): STATE['workers'] = int(data['workers'])
                 threading.Thread(target=batch, daemon=True).start()
                 return self._json(dict(ok=True))
             if u.path == '/api/save':
@@ -213,6 +220,7 @@ class H(BaseHTTPRequestHandler):
 def main():
     src = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
     port = int(os.environ.get('AZART_PORT', '8765'))
+    R.lower_priority()
     if os.path.isdir(src): open_folder(src)
     srv = ThreadingHTTPServer(('127.0.0.1', port), H)
     url = 'http://127.0.0.1:%d/' % port

@@ -41,7 +41,7 @@ P = dict(
     face_target=0.66, face_lift_k=1.3, face_lift_cap=0.55, face_lift_flat=0.30,
     face_shadow_k=1.7, face_shadow_cap=0.55,
     conf_n=2.0, photo_weight=0.45,
-    knee=0.82, top_knee=0.95, map_scale=0.25, clip_budget=0.030, clip_level=251,
+    knee=0.82, top_knee=0.95, tile_rows=384, map_scale=0.25, clip_budget=0.030, clip_level=251,
 )
 
 # ------------------------------------------------------------------ базові функції
@@ -184,15 +184,23 @@ def base_srgb(Y, p=P):
     L = np.log2(np.maximum(Y, 1e-5))
     return l2s(2.0**guided(L, max(6, int(min(L.shape)*0.07)), 0.10))
 
-def local_gain(Y, r, p, full_shape):
+def base_log(Y, p=P):
+    """Згладжений логарифм яскравості. Множення Y на сталу лише зсуває результат,
+    тому для різних експозицій його достатньо порахувати один раз."""
+    L = np.log2(np.maximum(Y, 1e-5))
+    return guided(L, max(6, int(min(L.shape)*0.07)), 0.10)
+
+
+def local_gain(Y, r, p, full_shape, base=None):
     """Карта підсилення в EV: тіні, світла, обличчя."""
-    B = base_srgb(Y, p)
+    B = base_srgb(Y, p) if base is None else base
+    shape = B.shape
     a, b, c, d = p['sh_band']
     g = r['shadows']*ss(B, a, b)*(1-ss(B, c, d))
     e, f = p['hl_band']
     g = g-r['highlights']*ss(B, e, f)
     if r['face_fix']:
-        _, each = face_mask(Y.shape, [x['box'] for x in r['face_fix']], full_shape)
+        _, each = face_mask(shape, [x['box'] for x in r['face_fix']], full_shape)
         for m, fx in zip(each, r['face_fix']):
             if m.max() < 1e-3: continue
             inner = B[m > 0.5]
@@ -282,21 +290,19 @@ def analyze(rgb8, ref=REF_SKIN, p=P, series_cast=None, cache=None):
     r['ev'] = round(ev, 2)
 
     # --- 3. скільки піднімати напівтінь і тиснути світла ---
-    Y = np.maximum(luma(lin0*(2.0**ev)), 1e-5)
-    bs = base_srgb(Y, p)
+    B0 = base_log(np.maximum(luma(lin0), 1e-5), p)      # рахуємо один раз
+    bs = l2s(np.exp2(B0+ev))
     dark = float(np.mean(np.clip((p['sh_hi']-bs)/(p['sh_hi']-p['sh_lo']), 0, 1)*(bs > p['sh_lo'])))
     brig = float(np.mean(np.maximum(bs-p['hl_ref'], 0))/(1-p['hl_ref']))
     r['shadows'] = round(float(np.clip(dark*p['sh_k'], 0, p['sh_cap'])), 2)
     r['highlights'] = round(float(np.clip(brig*p['hl_k'], 0, p['hl_cap'])), 2)
     r['contrast'] = 0.0; r['sat'] = 0.0
-    _levels(l2s(np.clip(luma(shoulder(lin0*(2.0**ev)*(2.0**local_gain(Y, r, p, rgb8.shape))[..., None],
-                                      p['knee'])), 0, 1)), r, p)
 
     # --- 4. обличчя: підсвічуємо тіньову частину, освітлену майже не чіпаємо ---
     def pre(ev):
-        lin = lin0*(2.0**ev); Yl = np.maximum(luma(lin), 1e-5)
-        l2 = shoulder(lin*(2.0**local_gain(Yl, r, p, rgb8.shape))[..., None], p['knee'])
-        return l2s(np.clip(luma(l2), 0, 1))
+        lin = lin0*(2.0**ev)
+        g = local_gain(None, r, p, rgb8.shape, base=l2s(np.exp2(B0+ev)))
+        return l2s(np.clip(luma(shoulder(lin*(2.0**g)[..., None], p['knee'])), 0, 1))
     ys = pre(ev)
     fm, each = face_mask(ys.shape, [f['box'] for f in faces], rgb8.shape)
     fix = []
@@ -364,63 +370,96 @@ def analyze(rgb8, ref=REF_SKIN, p=P, series_cast=None, cache=None):
 
 
 # ------------------------------------------------------------------ відтворення
-def render(rgb8, r, p=P, zones=None):
+def _maps(rgb8, r, p, zones, lut):
+    """Повільні карти рахуються один раз на весь кадр: локальне підсилення
+    та маски насиченості. Далі кадр обробляється смугами."""
     H, W = rgb8.shape[:2]
-    lin = s2l8(rgb8)*corr_gains(r['temp'], r['tint'])*(2.0**r['ev'])
+    Y = np.empty((H, W), np.float32)
+    for y0 in range(0, H, p['tile_rows']):
+        y1 = min(y0+p['tile_rows'], H); b = rgb8[y0:y1]
+        Y[y0:y1] = (lut[0][b[..., 0]]*LUMW[0]+lut[1][b[..., 1]]*LUMW[1]+lut[2][b[..., 2]]*LUMW[2])
     sw, sh = max(int(W*p['map_scale']), 48), max(int(H*p['map_scale']), 48)
-    Ysm = cv2.resize(luma(lin), (sw, sh), interpolation=cv2.INTER_AREA)
-    gv = local_gain(np.maximum(Ysm, 1e-5), r, p, (H, W))
+    Ysm = np.maximum(cv2.resize(Y, (sw, sh), interpolation=cv2.INTER_AREA), 1e-5)
+    del Y
+    gv = local_gain(Ysm, r, p, (H, W))
     zev, zmasks = zone_gain(zones, (sh, sw), (H, W))
-    lin = shoulder(lin*cv2.resize(2.0**(gv+zev), (W, H), interpolation=cv2.INTER_LINEAR)[..., None], p['knee'])
+    gain = cv2.resize(np.exp2(gv+zev).astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
+    fsat = zsat = None
+    if r.get('face_box'):
+        fm, _ = face_mask((sh, sw), r['face_box'], (H, W), grow=(1.0, 1.2))
+        fsat = cv2.resize((fm*p['skin_sat']).astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
+    zs = [(m, z) for m, z in zmasks if z.get('sat')]
+    if zs:
+        m = np.zeros((sh, sw), np.float32)
+        for mz, z in zs: m += mz*float(z['sat'])
+        zsat = cv2.resize(m, (W, H), interpolation=cv2.INTER_LINEAR)
+    return gain, fsat, zsat
 
-    srgb = l2s(lin); Y = np.maximum(luma(srgb), 1e-5)
+
+def _block(b8, gain, fsat, zsat, r, p, lut):
+    lin = np.empty(b8.shape, np.float32)
+    for c in range(3): lin[..., c] = lut[c][b8[..., c]]
+    lin *= gain[..., None]
+    lin = shoulder(lin, p['knee'])
+
+    srgb = l2s(lin); del lin
+    Y = np.maximum(luma(srgb), 1e-5)
     t = np.clip((Y-r['black'])/(1-r['black']), 0, 1) if r['black'] > 0.002 else np.clip(Y, 0, 1)
     w = r.get('white', 1.0)
-    if w > 1.001:                      # біла точка: світла підтягуються, без обрізання
+    if w > 1.001:
         t = t*w; t = np.where(t <= 0.82, t, 0.82+(1-0.82)*(1-np.exp(-(t-0.82)/(1-0.82))))
     g = r.get('gamma', 1.0)
-    if abs(g-1) > 0.002: t = np.power(np.clip(t, 0, 1), g)      # середні тони
+    if abs(g-1) > 0.002: t = np.power(np.clip(t, 0, 1), g)
     if r['contrast'] > 0.01:
         c = r['contrast']
         t = (1-c)*t+c*(0.5-np.sin(np.arcsin(np.clip(1-2*t, -1, 1))/3))
-    srgb = srgb*(t/Y)[..., None]            # верх поки не обрізаємо: плече нижче
+    srgb *= (t/Y)[..., None]
+    del t, Y
 
-    # тепле підсвічування: жовто-оранжеві тони (шкіра, дерево, листя) стають світлішими
     if p['skin_lum'] > 0.005:
-        # маска рахується у повному розмірі: зменшена розмивається через краї
-        # і піднімає сусідні світлі ділянки, через що потім доводиться
-        # сильніше тиснути світла і лице стає пласким
         mx = chmax(srgb); mn = chmin(srgb); d = np.maximum(mx-mn, 1e-5)
         isr = (srgb[..., 0] >= mx-1e-6)
         hue = 60.0*(srgb[..., 1]-srgb[..., 2])/d
         a1, a2, a3, a4 = p['skin_hue']
         m = (isr*ss(hue, a1, a2)*(1-ss(hue, a3, a4))*ss(d/np.maximum(mx, 1e-5), 0.06, 0.16)
              * ss(mx, 0.10, 0.22)*(1-ss(mx, 0.85, 0.99)))
-        srgb = srgb*(1+p['skin_lum']*m)[..., None]
+        srgb *= (1+p['skin_lum']*m)[..., None]
 
-    # насиченість: слабконасичене піднімається більше, шкіра отримує невелику добавку
-    if r['sat'] > 0.01 or r.get('face_box') or any(z.get('sat') for _, z in zmasks):
+    if r['sat'] > 0.01 or fsat is not None or zsat is not None:
         mx = chmax(srgb); mn = chmin(srgb)
         sat = (mx-mn)/np.maximum(mx, 1e-5)
         f = 1+r['sat']*(1-ss(sat, *p['sat_band']))**1.2
-        f = 1+(f-1)*(1-ss(mx, 0.85, 0.99))      # майже білі ділянки не насичуємо
-        if r.get('face_box'):
-            fm, _ = face_mask((sh, sw), r['face_box'], (H, W), grow=(1.0, 1.2))
-            fmf = cv2.resize(fm, (W, H), interpolation=cv2.INTER_LINEAR)
-            f = f+fmf*p['skin_sat']*(1-ss(mx, 0.85, 0.99))   # щоб лице не було блідим
-        for m, z in zmasks:
-            if z.get('sat'):
-                f = f+cv2.resize(m, (W, H), interpolation=cv2.INTER_LINEAR)*float(z['sat'])
+        guard = 1-ss(mx, 0.85, 0.99)
+        f = 1+(f-1)*guard
+        if fsat is not None: f = f+fsat*guard
+        if zsat is not None: f = f+zsat
         yl = luma(srgb)[..., None]
         srgb = yl+(srgb-yl)*f[..., None]
 
-    # плече по каналах: усе, що вилізло за межу, плавно повертається в діапазон,
-    # тому на яскравих костюмах лишається фактура замість білої плями
     k = p['top_knee']; mx = chmax(srgb); m = mx > k
     if m.any():
         v = mx[m]
         srgb[m] *= ((k+(1-k)*np.tanh((v-k)/(1-k)))/v)[:, None]
-    return (np.clip(srgb, 0, 1)*255+0.5).astype(np.uint8)
+    np.clip(srgb, 0, 1, out=srgb); srgb *= 255.0; srgb += 0.5
+    return srgb.astype(np.uint8)
+
+
+def render(rgb8, r, p=P, zones=None):
+    """Кадр обробляється смугами: пікова памʼять у кілька разів менша,
+    тому ноутбук не йде у підкачку при паралельній обробці."""
+    H, W = rgb8.shape[:2]
+    g = corr_gains(r['temp'], r['tint'])*(2.0**r['ev'])
+    lut = np.stack([_S2L*float(g[c]) for c in range(3)])
+    gain, fsat, zsat = _maps(rgb8, r, p, zones, lut)
+    out = np.empty((H, W, 3), np.uint8)
+    rows = max(p['tile_rows'], 32)
+    for y0 in range(0, H, rows):
+        y1 = min(y0+rows, H)
+        out[y0:y1] = _block(rgb8[y0:y1], gain[y0:y1],
+                            None if fsat is None else fsat[y0:y1],
+                            None if zsat is None else zsat[y0:y1], r, p, lut)
+    return out
+
 
 def with_adjust(r, adj):
     """Ручні поправки поверх автоматичних значень. «mid» піднімає середні тони
